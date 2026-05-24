@@ -206,8 +206,13 @@ uiData.photoMode                = savedCfg.photoMode
 
 local steeringSmoother         = lib.SmoothTowards:new( 7.0,  0.13, -1.0,  1.0,  0.0) -- Smooths the initial steering input
 local absSteeringSmoother      = lib.SmoothTowards:new( 7.0,  0.13, -1.0,  1.0,  0.0) -- Smooths the absolute value of the initial steering input
-local kbThrottleSmoother       = lib.SmoothTowards:new(12.0,  1.0,   0.0,  1.0,  0.0)
-local kbBrakeSmoother          = lib.SmoothTowards:new(12.0,  1.0,   0.0,  1.0,  0.0)
+local kbThrottleSmoother       = lib.SmoothTowards:new(6.0,  1.0,   0.0,  1.0,  0.0)
+local kbBrakeSmoother          = lib.SmoothTowards:new(6.0,  1.0,   0.0,  1.0,  0.0)
+
+-- ADD THESE NEW SMOOTHERS (rate 6.0 = 1/6th second)
+local globalThrottleSmoother   = lib.SmoothTowards:new(6.0,   0.01,  0.0,  1.0,  0.0)
+local globalBrakeSmoother      = lib.SmoothTowards:new(6.0,   0.01,  0.0,  1.0,  0.0)
+
 local kbSteerSmoother          = lib.SmoothTowards:new( 7.0,  1.0,  -1.0,  1.0,  0.0)
 local selfSteerSmoother        = lib.SmoothTowards:new( 7.0,  0.13, -1.0,  1.0,  0.0) -- Smooths out the self-steer force
 local limitSmoother            = lib.SmoothTowards:new(11.0,  0.01,  0.0, 32.0, 32.0) -- Smooths out changes in the steering limit -- tricky to get the rate right, too slow and it causes oscillations on turn-in, too fast and it lets noise through into the steering
@@ -704,21 +709,7 @@ local function processInitialInput(vData, kbMode, steeringRateMult, extrasObj, d
         kbSteerSmoother.state = 0.0
     end
 
-    -- local mouseSteer = 0
-
-    -- if uiData.mouseSteering or true then
-    --     local ui = ac.getUI()
-    --     if not ui.wantCaptureMouse and ui.isMouseLeftKeyDown then
-    --         mouseAcc = mouseAcc + ui.mouseDelta.x
-    --         mouseSteer = math.clamp(mouseAcc / (ui.windowSize.x / 3.0), -1.0, 1.0)
-    --     else
-    --         mouseAcc = 0
-    --     end
-    -- else
-    --     mouseAcc = 0
-    -- end
-
-    local rawSteer           = sanitizeSteeringInput(vData.inputData.steerStickX + kbSteer) --  + mouseSteer
+    local rawSteer           = sanitizeSteeringInput(vData.inputData.steerStickX + kbSteer)
     local centeringRate      = 1.0 -- Faster centering rate when the steering rate is under 50%
     if steeringRateMult > 0.0 and steeringRateMult < 0.5 then
         if (math.abs(rawSteer) < math.abs(steeringSmoother.state) and math.sign(rawSteer) == math.sign(steeringSmoother.state)) or (math.sign(rawSteer) ~= math.sign(steeringSmoother.state)) then
@@ -745,9 +736,18 @@ local function processInitialInput(vData, kbMode, steeringRateMult, extrasObj, d
         kbBrakeSmoother.state    = 0.0
     end
 
-    extrasObj.rawThrottle        = lib.clamp01(vData.inputData.gas + kbThrottle)
-    extrasObj.controllerThrottle = vData.inputData.gas
-    extrasObj.controllerBrake    = vData.inputData.brake
+    -- Get raw combined inputs
+    local rawCombinedThrottle = lib.clamp01(vData.inputData.gas + kbThrottle)
+    local rawCombinedBrake    = lib.clamp01(vData.inputData.brake + kbBrake)
+    
+    -- Apply GLOBAL smoothing to ALL inputs (controller + keyboard combined)
+    local smoothedThrottle = globalThrottleSmoother:get(rawCombinedThrottle, dt)
+    local smoothedBrake    = globalBrakeSmoother:get(rawCombinedBrake, dt)
+    
+    -- Store smoothed values for extras (auto clutch, shifting, etc.)
+    extrasObj.rawThrottle        = smoothedThrottle
+    extrasObj.controllerThrottle = globalThrottleSmoother:get(vData.inputData.gas, dt)  -- Smoothed controller only
+    extrasObj.controllerBrake    = globalBrakeSmoother:get(vData.inputData.brake, dt)    -- Smoothed controller only
 
     -- // TODO detect these in a better way
     local brakeNdUsed        = vData.totalNdSlip
@@ -756,6 +756,7 @@ local function processInitialInput(vData, kbMode, steeringRateMult, extrasObj, d
     extrasObj.brakeNdUsed    = brakeNdUsed + 0.15
     extrasObj.throttleNdUsed = throttleNdUsed
 
+    -- Apply keyboard assistance if enabled (uses the smoothed throttle/brake values)
     if kbMode > 0 then
 
         local finalBrakeTarget = 1.0
@@ -783,8 +784,13 @@ local function processInitialInput(vData, kbMode, steeringRateMult, extrasObj, d
             end
         end
 
-        vData.inputData.brake = sanitize01Input(vData.inputData.brake + kbBrake * finalBrakeTarget)
-        vData.inputData.gas   = sanitize01Input(vData.inputData.gas + kbThrottle * finalThrottleTarget)
+        -- Apply the final smoothed + assisted values to the input data
+        vData.inputData.brake = sanitize01Input(smoothedBrake + kbBrake * finalBrakeTarget)
+        vData.inputData.gas   = sanitize01Input(smoothedThrottle + kbThrottle * finalThrottleTarget)
+    else
+        -- No keyboard mode, just use smoothed controller inputs
+        vData.inputData.brake = smoothedBrake
+        vData.inputData.gas   = smoothedThrottle
     end
 
     return initialSteering, absInitialSteering
