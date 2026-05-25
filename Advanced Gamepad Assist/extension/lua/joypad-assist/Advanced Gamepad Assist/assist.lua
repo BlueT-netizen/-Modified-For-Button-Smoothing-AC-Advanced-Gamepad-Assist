@@ -71,16 +71,16 @@ local savedCfg = ac.storage({
     triggerFeedbackL         = 0.4,
     triggerFeedbackR         = 0.4,
     triggerFeedbackAlwaysOn  = false,
-    useFilter                = true,
-    filterSetting            = 0.5,
-    steeringRate             = 0.5,
+    useFilter                = false,
+    filterSetting            = 0.0,
+    steeringRate             = 1,
     targetSlip               = 0.95,
     rateIncreaseWithSpeed    = 0.0,
-    selfSteerResponse        = 0.37,
-    dampingStrength          = 0.37,
+    selfSteerResponse        = 0.001,
+    dampingStrength          = 0.001,
     maxSelfSteerAngle        = 90.0,
-    countersteerResponse     = 0.2,
-    maxDynamicLimitReduction = 5.0,
+    countersteerResponse     = 0.05,
+    maxDynamicLimitReduction = 0.1,
     photoMode                = false
 }, "AGA_")
 
@@ -204,18 +204,18 @@ uiData.photoMode                = savedCfg.photoMode
 
 -- MAIN LOGIC =================================================================================
 
-local steeringSmoother         = lib.SmoothTowards:new( 7.0,  0.13, -1.0,  1.0,  0.0) -- Smooths the initial steering input
-local absSteeringSmoother      = lib.SmoothTowards:new( 7.0,  0.13, -1.0,  1.0,  0.0) -- Smooths the absolute value of the initial steering input
+local steeringSmoother         = lib.SmoothTowards:new( 500.0,  0.13, -1.0,  1.0,  0.0) -- Smooths the initial steering input
+local absSteeringSmoother      = lib.SmoothTowards:new( 100.0,  0.13, -1.0,  1.0,  0.0) -- Smooths the absolute value of the initial steering input
 local kbThrottleSmoother       = lib.SmoothTowards:new(6.0,  1.0,   0.0,  1.0,  0.0)
 local kbBrakeSmoother          = lib.SmoothTowards:new(6.0,  1.0,   0.0,  1.0,  0.0)
 
 -- ADD THESE NEW SMOOTHERS (rate 6.0 = 1/6th second)
-local globalThrottleSmoother   = lib.SmoothTowards:new(6.0,   0.01,  0.0,  1.0,  0.0)
-local globalBrakeSmoother      = lib.SmoothTowards:new(6.0,   0.01,  0.0,  1.0,  0.0)
+local globalThrottleSmoother   = lib.SmoothTowards:new(5.0,   0.01,  0.0,  1.0,  0.0)
+local globalBrakeSmoother      = lib.SmoothTowards:new(5.0,   0.01,  0.0,  1.0,  0.0)
 
 local kbSteerSmoother          = lib.SmoothTowards:new( 7.0,  1.0,  -1.0,  1.0,  0.0)
-local selfSteerSmoother        = lib.SmoothTowards:new( 7.0,  0.13, -1.0,  1.0,  0.0) -- Smooths out the self-steer force
-local limitSmoother            = lib.SmoothTowards:new(11.0,  0.01,  0.0, 32.0, 32.0) -- Smooths out changes in the steering limit -- tricky to get the rate right, too slow and it causes oscillations on turn-in, too fast and it lets noise through into the steering
+local selfSteerSmoother        = lib.SmoothTowards:new( 70.0,  0.13, -1.0,  1.0,  0.0) -- Smooths out the self-steer force
+local limitSmoother            = lib.SmoothTowards:new(60.0,  0.01,  0.0, 32.0, 32.0) -- Smooths out changes in the steering limit -- tricky to get the rate right, too slow and it causes oscillations on turn-in, too fast and it lets noise through into the steering
 local groundedSmoother         = lib.SmoothTowards:new( 4.0,  1.0,   0.0,  1.0,  1.0) -- Smooths the value that indicates if any of the front wheels are grounded
 local frontSlipDisplaySmoother = lib.SmoothTowards:new(10.0,  0.05,  0.0,  1.0,  0.0) -- Smooths the relative front slip value sent to the UI app for visualization
 local rearSlipDisplaySmoother  = lib.SmoothTowards:new(10.0,  0.05,  0.0,  1.0,  0.0) -- Smooths the relative rear slip value sent to the UI app for visualization
@@ -619,8 +619,8 @@ local function calcCorrectedSteering(vData, targetFrontSlipDeg, initialSteering,
     local correctionExponent  = 1.0 + (1.0 - math.log10(10.0 * (uiData.selfSteerResponse * 0.9 + 0.1))) -- This is just to make `cfg.selfSteerResponse` scale in a better way
     local correctionBase      = lib.signedPow(math.clamp(-rAxleHVelAngle / 72.0, -1, 1), correctionExponent) * 72.0 / vData.steeringLockDeg -- Base self-steer force
     local selfSteerCap        = lib.clamp01(uiData.maxSelfSteerAngle / vData.steeringLockDeg) -- Max self-steer amount
-    local selfSteerStrength   = math.max(1.0, vData.frontGrounded) * assistFadeIn -- Multiplier that can fade the self-steer force in and out
-    local dampingForce        = vData.localAngularVel.y * uiData.dampingStrength * 0.15 * (30.0 / vData.steeringLockDeg) -- 0.2125 * 0.6 = 0.1275 -- 0.159375
+    local selfSteerStrength   = math.max(1.0, vData.frontGrounded) * assistFadeIn * 0.01 -- Multiplier that can fade the self-steer force in and out
+    local dampingForce        = vData.localAngularVel.y * uiData.dampingStrength * 0.05 * (30.0 / vData.steeringLockDeg) -- 0.2125 * 0.6 = 0.1275 -- 0.159375
     local selfSteerCapT       = math.min(1.0, 4.0 / (2.0 * selfSteerCap)) -- Easing window
     local rawSelfSteer        = lib.clampEased(correctionBase, -selfSteerCap, selfSteerCap, selfSteerCapT) + dampingForce
     local selfSteerForce      = math.clamp(selfSteerSmoother:get(rawSelfSteer, dt), -2.0, 2.0) * selfSteerStrength
@@ -630,7 +630,7 @@ local function calcCorrectedSteering(vData, targetFrontSlipDeg, initialSteering,
 
     local finalTargetSlip      = targetFrontSlipDeg * uiData.targetSlip
     -- finalTargetSlip            = finalTargetSlip * math.lerp(1.0, 0.5, math.lerpInvSat(inputSign * fAxleHVelAngle, -finalTargetSlip * 0.1, finalTargetSlip * 0.5))
-    uiData._maxLimitReduction  = math.lerp(finalTargetSlip * 0.4, finalTargetSlip * 0.75, lib.clamp01(uiData.maxDynamicLimitReduction / 10.0)) -- math.lerp(0.8, 1.2, lib.clamp01(vData.localHVelLen / getTopSpeedEstimate(vData)))
+    uiData._maxLimitReduction  = 0.0--math.lerp(finalTargetSlip * 0.4, finalTargetSlip * 0.75, lib.clamp01(uiData.maxDynamicLimitReduction / 10.0)) -- math.lerp(0.8, 1.2, lib.clamp01(vData.localHVelLen / getTopSpeedEstimate(vData)))
     local angleSubLimit        = math.lerp(uiData._maxLimitReduction, uiData._maxLimitReduction * 0.9, vData.inputData.brake) -- How many degrees the steering limit is allowed to reduce when the car oversteers, in the process of trying to maintain the desired front slip angle -- + math.max(0.0, -inputSign * selfSteerForce * vData.steeringLockDeg)
     local clampedFAxleVelAngle = lib.clampEased(inputSign * fAxleHVelAngle, -vData.steeringLockDeg - 15.0, angleSubLimit, (angleSubLimit * 0.4) / (vData.steeringLockDeg + 15.0 + angleSubLimit)) -- Limiting how much the front velocity angle can affect the steering limit
     if vData.localHVelLen > 1e-15 then
